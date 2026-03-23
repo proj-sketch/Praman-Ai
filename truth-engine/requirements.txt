@@ -1,7 +1,6 @@
 fastapi
 uvicorn[standard]
-google-generativeai
-tavily-python
+groq
 langgraph
 langchain-core
 beautifulsoup4

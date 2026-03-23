@@ -7,12 +7,12 @@ True, False, Partially True, or Unverifiable — with confidence and citations.
 import json
 import asyncio
 import logging
-import google.generativeai as genai
-from app.config import GEMINI_API_KEY, GEMINI_MODEL
+import groq
+from app.config import GROQ_API_KEY, GROQ_MODEL
 from app.utils.prompts import VERDICT_SYSTEM_PROMPT, VERDICT_USER_PROMPT
 
-# Configure Gemini
-genai.configure(api_key=GEMINI_API_KEY)
+# Configure Groq
+client = groq.Groq(api_key=GROQ_API_KEY)
 
 
 async def generate_verdicts(claims: list[dict], research_results: list[dict]) -> dict:
@@ -25,20 +25,9 @@ async def generate_verdicts(claims: list[dict], research_results: list[dict]) ->
     for attempt in range(3):
         try:
             if attempt > 0:
-                delay = 15 * attempt
+                delay = 2 * attempt
                 logging.info(f"Verdict retry {attempt}/3 after {delay}s delay...")
                 await asyncio.sleep(delay)
-            
-            model = genai.GenerativeModel(
-                model_name=GEMINI_MODEL,
-                system_instruction=VERDICT_SYSTEM_PROMPT,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.1,
-                    top_p=0.8,
-                    max_output_tokens=8192,
-                    response_mime_type="application/json",
-                ),
-            )
             
             claims_json = json.dumps(claims, indent=2, default=str)
             evidence_json = json.dumps(research_results, indent=2, default=str)
@@ -48,18 +37,18 @@ async def generate_verdicts(claims: list[dict], research_results: list[dict]) ->
                 evidence_json=evidence_json,
             )
             
-            response = model.generate_content(prompt)
-            response_text = response.text.strip()
+            completion = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": VERDICT_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=3000,
+                response_format={"type": "json_object"}
+            )
             
-            import re
-            json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response_text, re.DOTALL)
-            if json_match:
-                response_text = json_match.group(1).strip()
-            else:
-                start = response_text.find('{')
-                end = response_text.rfind('}')
-                if start != -1 and end != -1:
-                    response_text = response_text[start:end+1]
+            response_text = completion.choices[0].message.content.strip()
             
             result = json.loads(response_text)
             

@@ -1,26 +1,26 @@
 """
 Agent 2 — Researcher
-For each claim, generates search queries, uses Tavily to gather evidence,
+For each claim, generates search queries, uses Gemini to gather evidence,
 and applies a self-reflection retry loop if results are insufficient.
 """
 
 import json
 import asyncio
 import logging
-import google.generativeai as genai
-from app.config import GEMINI_API_KEY, GEMINI_MODEL
+import groq
+from app.config import GROQ_API_KEY, GROQ_MODEL
 from app.utils.prompts import (
     RESEARCHER_SYSTEM_PROMPT,
     RESEARCHER_USER_PROMPT,
     RESEARCHER_REFLECTION_PROMPT,
 )
-from app.tools.tavily_search import search_multiple_queries
+from app.tools.groq_search import search_multiple_queries
 
-# Configure Gemini
-genai.configure(api_key=GEMINI_API_KEY)
+# Configure Groq
+client = groq.Groq(api_key=GROQ_API_KEY)
 
 MAX_RETRY_ROUNDS = 2  # Maximum self-reflection retry rounds
-RETRY_DELAY = 15  # seconds (free tier needs longer cooldowns)
+RETRY_DELAY = 2  # seconds (lowered to improve latency)
 
 
 async def research_claims(claims: list[dict]) -> list[dict]:
@@ -127,31 +127,21 @@ async def _generate_search_queries(claims: list[dict]) -> list[dict]:
                 await asyncio.sleep(RETRY_DELAY * attempt)
                 logging.info(f"Researcher query gen retry {attempt}/3...")
             
-            model = genai.GenerativeModel(
-                model_name=GEMINI_MODEL,
-                system_instruction=RESEARCHER_SYSTEM_PROMPT,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.3,
-                    top_p=0.8,
-                    max_output_tokens=4096,
-                    response_mime_type="application/json",
-                ),
-            )
-            
             claims_json = json.dumps(claims, indent=2, default=str)
             prompt = RESEARCHER_USER_PROMPT.format(claims_json=claims_json)
-            response = model.generate_content(prompt)
             
-            response_text = response.text.strip()
-            import re
-            json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response_text, re.DOTALL)
-            if json_match:
-                response_text = json_match.group(1).strip()
-            else:
-                start = response_text.find('{')
-                end = response_text.rfind('}')
-                if start != -1 and end != -1:
-                    response_text = response_text[start:end+1]
+            completion = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": RESEARCHER_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=1024,
+                response_format={"type": "json_object"}
+            )
+            
+            response_text = completion.choices[0].message.content.strip()
             
             result = json.loads(response_text)
             return result.get("claim_queries", [])
@@ -185,39 +175,23 @@ async def _reflect_on_evidence(claim_text: str, evidence: list[dict]) -> dict:
             if attempt > 0:
                 await asyncio.sleep(RETRY_DELAY * attempt)
             
-            model = genai.GenerativeModel(
-                model_name=GEMINI_MODEL,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.2,
-                    max_output_tokens=1024,
-                    response_mime_type="application/json",
-                ),
-            )
-            
-            evidence_summary = "\n".join([
-                f"- [{e.get('title', 'Unknown')}]({e.get('url', '')}): {e.get('content', '')[:300]}"
-                for e in evidence[:10]
-            ])
-            
-            if not evidence_summary:
-                evidence_summary = "No evidence found."
-            
             prompt = RESEARCHER_REFLECTION_PROMPT.format(
                 claim_text=claim_text,
                 evidence_summary=evidence_summary,
             )
             
-            response = model.generate_content(prompt)
-            response_text = response.text.strip()
-            import re
-            json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response_text, re.DOTALL)
-            if json_match:
-                response_text = json_match.group(1).strip()
-            else:
-                start = response_text.find('{')
-                end = response_text.rfind('}')
-                if start != -1 and end != -1:
-                    response_text = response_text[start:end+1]
+            completion = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a reflection engine that outputs JSON objects."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=1024,
+                response_format={"type": "json_object"}
+            )
+            
+            response_text = completion.choices[0].message.content.strip()
             
             return json.loads(response_text)
         

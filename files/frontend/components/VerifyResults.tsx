@@ -83,6 +83,8 @@ export default function VerifyResults({ query, onBack }: VerifyResultsProps) {
 
         const decoder = new TextDecoder();
         let buffer = "";
+        let currentEventType = "";
+        let currentData = "";
 
         while (true) {
           const { done, value } = await reader.read();
@@ -91,9 +93,6 @@ export default function VerifyResults({ query, onBack }: VerifyResultsProps) {
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split("\n");
           buffer = lines.pop() || "";
-
-          let currentEventType = "";
-          let currentData = "";
 
           for (const line of lines) {
             if (line.startsWith("event: ")) {
@@ -105,6 +104,7 @@ export default function VerifyResults({ query, onBack }: VerifyResultsProps) {
                 const data = JSON.parse(currentData);
 
                 if (currentEventType === "pipeline_step") {
+                  console.log("PIPELINE STEP:", data.step, data.status, data.detail ? "Has Detail" : "No Detail");
                   const step = data.step;
                   const status = data.status;
                   setCurrentStep(step);
@@ -116,8 +116,12 @@ export default function VerifyResults({ query, onBack }: VerifyResultsProps) {
                       setUrlMetadata(data.detail.url_metadata);
                     }
                     // Capture extracted claims from the extract completed event
-                    if (step === "extract" && status === "completed" && data.detail.claims) {
-                      setExtractedClaims(data.detail.claims);
+                    if (step === "extract" && status === "completed") {
+                      console.log("EXTRACT COMPLETED DATA:", data.detail);
+                      if (data.detail.claims) {
+                        setExtractedClaims(data.detail.claims);
+                        console.log("CLAIMS SET:", data.detail.claims.length);
+                      }
                     }
                   }
                 } else if (currentEventType === "complete") {

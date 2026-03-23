@@ -143,7 +143,8 @@ async def extract_node(state: PipelineState, session_id: str) -> PipelineState:
 
 async def research_node(state: PipelineState, session_id: str) -> PipelineState:
     """
-    Agent 2 — Research each claim using Tavily search with self-reflection.
+    Agent 2 — Research each claim using Groq with self-reflection.
+    Calls search tools and returns claims with evidence.
     """
     await _emit_event(session_id, format_step_event("research", "started"))
     

@@ -6,16 +6,15 @@ Uses Gemini with CoT prompting to extract 5–10 verifiable claims from input te
 import json
 import asyncio
 import logging
-import google.generativeai as genai
-from app.config import GEMINI_API_KEY, GEMINI_MODEL
+import groq
+from app.config import GROQ_API_KEY, GROQ_MODEL
 from app.utils.prompts import EXTRACTOR_SYSTEM_PROMPT, EXTRACTOR_USER_PROMPT
 
+# Configure Groq
+client = groq.Groq(api_key=GROQ_API_KEY)
 
-# Configure Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-
-MAX_RETRIES = 5
-RETRY_DELAY = 15  # seconds (free tier needs longer cooldowns)
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # seconds (used to be 15, lowered to improve frontend latency)
 
 
 async def extract_claims(input_text: str) -> dict:
@@ -32,35 +31,22 @@ async def extract_claims(input_text: str) -> dict:
                 logging.info(f"Extractor retry {attempt}/{MAX_RETRIES} after {delay}s delay...")
                 await asyncio.sleep(delay)
             
-            model = genai.GenerativeModel(
-                model_name=GEMINI_MODEL,
-                system_instruction=EXTRACTOR_SYSTEM_PROMPT,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.2,
-                    top_p=0.8,
-                    max_output_tokens=4096,
-                    response_mime_type="application/json",
-                ),
+            prompt = EXTRACTOR_USER_PROMPT.format(input_text=input_text)
+            
+            completion = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": EXTRACTOR_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=2048,
+                response_format={"type": "json_object"}
             )
             
-            prompt = EXTRACTOR_USER_PROMPT.format(input_text=input_text)
-            response = model.generate_content(prompt)
-            
             # Parse JSON from response
-            response_text = response.text.strip()
+            response_text = completion.choices[0].message.content.strip()
             logging.info(f"Extractor raw response ({len(response_text)} chars): {response_text[:200]}...")
-            
-            # Handle potential CoT text before the JSON block
-            import re
-            json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response_text, re.DOTALL)
-            if json_match:
-                response_text = json_match.group(1).strip()
-            else:
-                # Fallback to finding the curly braces if no code block was used
-                start = response_text.find('{')
-                end = response_text.rfind('}')
-                if start != -1 and end != -1:
-                    response_text = response_text[start:end+1]
             
             result = json.loads(response_text)
             

@@ -4,12 +4,12 @@ Bonus router — AI text detection and media/deepfake detection endpoints.
 
 import json
 import base64
-import google.generativeai as genai
+import groq
 from fastapi import APIRouter, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Optional
 
-from app.config import GEMINI_API_KEY, GEMINI_MODEL
+from app.config import GROQ_API_KEY, GROQ_MODEL
 from app.utils.prompts import (
     AI_DETECTION_SYSTEM_PROMPT,
     AI_DETECTION_USER_PROMPT,
@@ -17,8 +17,8 @@ from app.utils.prompts import (
     MEDIA_DETECTION_USER_PROMPT,
 )
 
-# Configure Gemini
-genai.configure(api_key=GEMINI_API_KEY)
+# Configure Groq
+client = groq.Groq(api_key=GROQ_API_KEY)
 
 router = APIRouter()
 
@@ -40,23 +40,20 @@ async def detect_ai_text(request: AIDetectionRequest):
         JSON with AI detection analysis, confidence, and indicators.
     """
     try:
-        model = genai.GenerativeModel(
-            model_name=GEMINI_MODEL,
-            system_instruction=AI_DETECTION_SYSTEM_PROMPT,
-            generation_config=genai.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=4096,
-            ),
+        prompt = AI_DETECTION_USER_PROMPT.format(input_text=request.text)
+        
+        completion = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": AI_DETECTION_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=4096,
+            response_format={"type": "json_object"}
         )
         
-        prompt = AI_DETECTION_USER_PROMPT.format(input_text=request.text)
-        response = model.generate_content(prompt)
-        
-        response_text = response.text.strip()
-        if response_text.startswith("```"):
-            lines = response_text.split("\n")
-            response_text = "\n".join(lines[1:-1])
-        
+        response_text = completion.choices[0].message.content.strip()
         result = json.loads(response_text)
         return {"success": True, "result": result}
     
@@ -94,38 +91,41 @@ async def detect_media_manipulation(
         # Determine MIME type
         content_type = file.content_type or "image/jpeg"
         
-        # Encode as base64 for Gemini Vision
-        b64_data = base64.b64encode(contents).decode("utf-8")
-        
-        model = genai.GenerativeModel(
-            model_name=GEMINI_MODEL,
-            system_instruction=MEDIA_DETECTION_SYSTEM_PROMPT,
-            generation_config=genai.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=4096,
-            ),
-        )
-        
-        # Build multimodal content
-        prompt_parts = [
-            MEDIA_DETECTION_USER_PROMPT,
-            {
-                "inline_data": {
-                    "mime_type": content_type,
-                    "data": b64_data,
-                }
-            },
+        # Groq Vision structure
+        content_items = [
+            {"type": "text", "text": MEDIA_DETECTION_SYSTEM_PROMPT + "\n\n" + MEDIA_DETECTION_USER_PROMPT}
         ]
         
         if description:
-            prompt_parts.insert(0, f"Context: {description}\n\n")
+            content_items.insert(0, {"type": "text", "text": f"Context: {description}\n\n"})
+            
+        content_items.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{content_type};base64,{b64_data}",
+            }
+        })
         
-        response = model.generate_content(prompt_parts)
+        completion = client.chat.completions.create(
+            model="llama-3.2-11b-vision-preview",
+            messages=[
+                {"role": "user", "content": content_items}
+            ],
+            temperature=0.1,
+            max_tokens=4096,
+        )
         
-        response_text = response.text.strip()
-        if response_text.startswith("```"):
-            lines = response_text.split("\n")
-            response_text = "\n".join(lines[1:-1])
+        response_text = completion.choices[0].message.content.strip()
+        
+        import re
+        json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response_text, re.DOTALL)
+        if json_match:
+            response_text = json_match.group(1).strip()
+        else:
+            start = response_text.find('{')
+            end = response_text.rfind('}')
+            if start != -1 and end != -1:
+                response_text = response_text[start:end+1]
         
         result = json.loads(response_text)
         return {"success": True, "filename": file.filename, "result": result}

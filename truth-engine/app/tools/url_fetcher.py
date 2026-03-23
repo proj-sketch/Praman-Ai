@@ -6,8 +6,6 @@ Used in the pre-processor step for URL inputs.
 import httpx
 from bs4 import BeautifulSoup
 from typing import Optional
-from tavily import AsyncTavilyClient
-from app.config import TAVILY_API_KEY
 import logging
 
 
